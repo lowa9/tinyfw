@@ -293,7 +293,7 @@ struct tinywall_conn *tinywall_connection_create(struct iphdr *iph)
         conn->timeout =
             conn->timeout = htonll(ktime_add_sec(ktime_get_real(), default_timeout_others));
     }
-    return NULL;
+    return conn;
 }
 
 // 添加一个连接
@@ -417,7 +417,7 @@ void tinywall_conn_table_clean_by_timer(struct tinywall_conn_table *table)
     int i = 0;
     struct hlist_node *tmp;
     struct tinywall_conn *conn;
-    tinywall_PR_INFO("Clean the connection table by timer");
+    printk(KERN_ERR MODULE_NAME ": Clean the connection table by timer");
     write_lock(&table->lock);
     hlist_for_each_entry_safe(conn, tmp, &table->table[i], node)
     {
@@ -454,7 +454,6 @@ void tinywall_conn_table_clean_by_timer(struct tinywall_conn_table *table)
 }
 void tinywall_timer_callback(struct timer_list *t)
 {
-    tinywall_PR_INFO("Clean the connection table...");
     tinywall_conn_table_clean_by_timer(&conn_table);
     conn_timer.expires = jiffies + tinywall_CLEAN_CONN_INVERVAL_SEC * HZ;
     add_timer(&conn_timer);
@@ -529,7 +528,7 @@ void tinywall_log_show(void)
     struct tinywall_log *log;
     struct file *file;
     mm_segment_t oldfs;
-    char buffer[256]; // 用于存储日志信息的缓冲区
+    char buffer[4096]; // 用于存储日志信息的缓冲区
 
     // 打开文件，使用 O_WRONLY | O_CREAT | O_APPEND 选项
     file = filp_open("./log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
@@ -600,7 +599,42 @@ static unsigned int firewall_hook(void *priv,
     int res = 0;
     unsigned int action = default_action;
     struct iphdr *iph = ip_hdr(skb);
+    if (!iph)
+    {
+        printk(KERN_ERR MODULE_NAME ": Invalid IP header.\n");
+        return NF_DROP;
+    }
+
     struct tinywall_conn *conn = tinywall_connection_create(iph);
+    if (!conn)
+    {
+        printk(KERN_ERR MODULE_NAME ": Failed to create connection.\n");
+        return NF_DROP;
+    }
+
+    printk(KERN_INFO MODULE_NAME ": Created connection: saddr=%pI4, daddr=%pI4, protocol=%u",
+           &conn->saddr, &conn->daddr, conn->protocol);
+
+    if (conn->protocol == IPPROTO_TCP)
+    {
+        printk(", sport=%u, dport=%u, state=%u\n",
+               ntohs(conn->tcp.sport), ntohs(conn->tcp.dport), conn->tcp.state);
+    }
+    else if (conn->protocol == IPPROTO_UDP)
+    {
+        printk(", sport=%u, dport=%u\n",
+               ntohs(conn->udp.sport), ntohs(conn->udp.dport));
+    }
+    else if (conn->protocol == IPPROTO_ICMP)
+    {
+        printk(", type=%u, code=%u\n",
+               conn->icmp.type, conn->icmp.code);
+    }
+    else
+    {
+        printk("\n");
+    }
+
     struct tinywall_rule *rule = NULL;
     struct tinywall_log *log = NULL;
 
@@ -655,6 +689,7 @@ static unsigned int firewall_hook(void *priv,
         res = ntohl(rule->action);
         if (rule->logging)
         {
+            printk(KERN_INFO MODULE_NAME ": Logging enabled.\n");
             log = tinywall_log_create(skb, ntohl(rule->action));
             tinywall_log_add(log);
         }
@@ -777,8 +812,8 @@ out:
 static struct nf_hook_ops firewall_nfho = {
     .hook = firewall_hook,
     .pf = PF_INET,
-    .hooknum = NF_INET_FORWARD,
-    //.hooknum = NF_INET_PRE_ROUTING,
+    //.hooknum = NF_INET_FORWARD,
+    .hooknum = NF_INET_PRE_ROUTING,
     .priority = NF_IP_PRI_FIRST,
 };
 
