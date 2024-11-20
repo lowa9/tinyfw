@@ -135,25 +135,74 @@ void tinywall_log_show(void);
 struct tinywall_conn *tinywall_connection_create(struct iphdr *iph);
 
 struct tinywall_rule *tinywall_rule_match(struct tinywall_conn *conn);
-// hash函数
+// // hash函数
+// static inline size_t tinywall_hash(struct tinywall_conn *conn)
+// {
+//     size_t hash = 0;
+//     hash = jhash_2words(ntohs(conn->saddr), ntohs(conn->daddr), hash);
+//     hash = jhash_2words(conn->protocol, 0, hash);
+//     switch (conn->protocol)
+//     {
+//     case IPPROTO_TCP:
+//         hash = jhash_2words(ntohs(conn->tcp.sport), ntohs(conn->tcp.dport), hash);
+//         break;
+//     case IPPROTO_UDP:
+//         hash = jhash_2words(ntohs(conn->udp.sport), ntohs(conn->udp.dport), hash);
+//         break;
+//     case IPPROTO_ICMP:
+//         hash = jhash_2words(conn->icmp.type, conn->icmp.code, hash);
+//         break;
+//     }
+//     return hash % HASH_SIZE;
+// }
+
+// 修改后的哈希函数
 static inline size_t tinywall_hash(struct tinywall_conn *conn)
 {
     size_t hash = 0;
-    hash = jhash_2words(ntohs(conn->saddr), ntohs(conn->daddr), hash);
-    hash = jhash_2words(conn->protocol, 0, hash);
+
+    // 确保源地址和目的地址是有序的
+    __be32 addr1 = conn->saddr;
+    __be32 addr2 = conn->daddr;
+    __be16 port1 = 0;
+    __be32 port2 = 0;
+    
+    u32 protocol_32 = (u32)conn->protocol;
+    if (ntohl(addr1) > ntohl(addr2)) {
+        swap(addr1, addr2);
+    }
+
+    // 计算源地址和目的地址的哈希值
+    hash = jhash_2words(ntohl(addr1), ntohl(addr2), hash);
+    // 计算协议的哈希值
+    hash = jhash_2words(protocol_32, 0, hash);
+
+    // 根据协议类型进一步计算哈希值
     switch (conn->protocol)
     {
     case IPPROTO_TCP:
-        hash = jhash_2words(ntohs(conn->tcp.sport), ntohs(conn->tcp.dport), hash);
+        // 确保源端口和目的端口是有序的
+        port1 = conn->tcp.sport;
+        port2 = conn->tcp.dport;
+        if (ntohs(port1) > ntohs(port2)) {
+            swap(port1, port2);
+        }
+        hash = jhash_2words(ntohs(port1), ntohs(port2), hash);
         break;
     case IPPROTO_UDP:
-        hash = jhash_2words(ntohs(conn->udp.sport), ntohs(conn->udp.dport), hash);
+        // 确保源端口和目的端口是有序的
+        port1 = conn->udp.sport;
+        port2 = conn->udp.dport;
+        if (ntohs(port1) > ntohs(port2)) {
+            swap(port1, port2);
+        }
+        hash = jhash_2words(ntohs(port1), ntohs(port2), hash);
         break;
     case IPPROTO_ICMP:
         hash = jhash_2words(conn->icmp.type, conn->icmp.code, hash);
         break;
     }
+    // 返回最终的哈希值
     return hash % HASH_SIZE;
 }
-
 #endif

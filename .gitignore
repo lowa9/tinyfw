@@ -25,3 +25,4 @@ tinywall.o
 rule_table.txt
 rules
 log.txt
+conn_table.txt

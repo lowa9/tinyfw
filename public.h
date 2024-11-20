@@ -1,6 +1,6 @@
 #define NLMSG_MAX_SIZE 65535
 #define NETLINK_USER 31
-#define HASH_SIZE 1024
+#define HASH_SIZE 128
 // 定义过滤规则结构
 #define htonll(x) (((__u64)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
 #define ntohll(x) (((__u64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
@@ -66,4 +66,11 @@ struct TINYWALL_response
     __u8 type;
     __be32 len;
     __u8 msg[0];
+};
+
+enum TINYWALL_TCP_STATE
+{
+    TINYWALL_SYN_RECEIVED,
+    TINYWALL_SYN_ACK_RECEIVED,
+    TINYWALL_TCP_ESTABLISHED
 };
