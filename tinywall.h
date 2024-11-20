@@ -13,7 +13,7 @@
 #include <linux/skbuff.h>
 #include <linux/list.h>
 #include <linux/hashtable.h>
-#include <linux/fs.h> // 包含文件操作相关的头文件
+#include <linux/fs.h>      // 包含文件操作相关的头文件
 #include <linux/uaccess.h> // 包含用户空间访问相关的头文件
 #include "public.h"
 
@@ -37,25 +37,25 @@ typedef struct tinywall_rule
 } tinywall_rule;
 
 /* >----------------------------------conn entity----------------------------------<*/
-struct tinywall_conn
+typedef struct tinywall_conn
 {
     __be32 saddr;
     __be32 daddr;
     __u8 protocol;
     union
     {
-        struct
+        struct icmp
         {
             __u8 type;
             __u8 code;
         } icmp;
-        struct
+        struct tcp
         {
             __be16 sport;
             __be16 dport;
             __u8 state;
         } tcp;
-        struct
+        struct udp
         {
             __be16 sport;
             __be16 dport;
@@ -63,9 +63,9 @@ struct tinywall_conn
     };
     __be64 timeout;
     struct hlist_node node;
-};
+} tinywall_conn;
 
-struct tinywall_log
+typedef struct tinywall_log
 {
     __be32 idx;
     __be64 ts;
@@ -94,7 +94,7 @@ struct tinywall_log
     __be16 len;
     __be32 action;
     struct list_head node;
-};
+} tinywall_log;
 
 /* >----------------------------------规则表----------------------------------<*/
 struct tinywall_rule_table
@@ -128,6 +128,8 @@ void tinywall_rules_list(void);
 
 void tinywall_rules_clear(void);
 
+void tinywall_conn_show(void);
+
 void tinywall_log_show(void);
 
 struct tinywall_conn *tinywall_connection_create(struct iphdr *iph);
@@ -137,8 +139,8 @@ struct tinywall_rule *tinywall_rule_match(struct tinywall_conn *conn);
 static inline size_t tinywall_hash(struct tinywall_conn *conn)
 {
     size_t hash = 0;
-    hash = jhash_2words(conn->saddr, conn->daddr, hash);
-    hash = jhash_2words(conn->protocol, conn->timeout, hash);
+    hash = jhash_2words(ntohs(conn->saddr), ntohs(conn->daddr), hash);
+    hash = jhash_2words(conn->protocol, 0, hash);
     switch (conn->protocol)
     {
     case IPPROTO_TCP:

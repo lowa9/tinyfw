@@ -14,11 +14,19 @@
 
 /* >----------------------------------rule operations----------------------------------<*/
 // 增加规则
-int rule_add(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr, struct tinywall_rule_user *rule)
+static unsigned int seq = 0;
+int rule_add(int sock_fd, struct sockaddr_nl *dest_addr, struct tinywall_rule_user *rule)
 {
+    struct nlmsghdr *nlh = malloc(NLMSG_SPACE(sizeof(tinywall_rule_user)));
+    if (!nlh)
+    {
+        perror("malloc");
+        return -1;
+    }
+
     nlh->nlmsg_type = TINYWALL_TYPE_ADD_RULE;
     nlh->nlmsg_flags = NLM_F_REQUEST;
-    nlh->nlmsg_seq = 1;
+    nlh->nlmsg_seq = ++seq; // 使用递增的序列号
     nlh->nlmsg_pid = getpid();
 
     // 设置消息长度
@@ -28,20 +36,24 @@ int rule_add(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr, s
     // 构造消息头和数据
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
+
     printf("Sending message to kernel...\n");
     if (sendmsg(sock_fd, &msg, 0) < 0)
     {
         perror("sendmsg");
+        free(nlh);
         return -2;
     }
 
     printf("Rule added successfully.\n");
+    free(nlh);
     return 0;
 }
 
 // 移除规则
-void rule_remove(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr)
+void rule_remove(int sock_fd, struct sockaddr_nl *dest_addr)
 {
+    struct nlmsghdr *nlh = malloc(NLMSG_SPACE(sizeof(unsigned int)));
     printf("Enter rule ID to remove: ");
     unsigned int rule_id;
     scanf("%u", &rule_id);
@@ -74,7 +86,7 @@ void rules_clear(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_add
 }
 
 // 从文件中读取规则并添加
-int load_rules_from_file(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr, const char *filename)
+int load_rules_from_file(int sock_fd, struct sockaddr_nl *dest_addr, const char *filename)
 {
     int ret = 0;
     FILE *file = fopen(filename, "r");
@@ -124,10 +136,12 @@ int load_rules_from_file(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *
         rule.protocol = htons(rule.protocol);
         rule.action = htons(rule.action);
         rule.logging = htons(rule.logging);
-        printf("src_ip: %s\n", inet_ntoa(*(struct in_addr *)&rule.src_ip));
-        printf("port rage: %hu->%hu  %hu->%hu\n", ntohs(rule.src_port_min), ntohs(rule.src_port_max), ntohs(rule.dst_port_min), ntohs(rule.dst_port_max));
-        printf("protocol: %hu action: %hu\n", rule.protocol, rule.action);
-        ret = rule_add(sock_fd, nlh, dest_addr, &rule);
+        printf("|| src_ip: %s\n", inet_ntoa(*(struct in_addr *)&rule.src_ip));
+        printf("|| dst_ip: %s\n", inet_ntoa(*(struct in_addr *)&rule.dst_ip));
+        printf("|| sport rage: %hu->%hu  dport rage: %hu->%hu\n", ntohs(rule.src_port_min), ntohs(rule.src_port_max),
+               ntohs(rule.dst_port_min), ntohs(rule.dst_port_max));
+        printf("|| protocol: %hu action: %hu\n", ntohs(rule.protocol), ntohs(rule.action));
+        ret = rule_add(sock_fd, dest_addr, &rule);
         if (ret == -2)
         {
             printf("Error adding rule\n");
@@ -217,7 +231,15 @@ void rules_store(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_add
 
 void log_show(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr)
 {
-    nlh->nlmsg_type = TINYWALL_TYPE_LOG_SHOW;
+    nlh->nlmsg_type = TINYWALL_TYPE_SHOW_LOGS;
+    struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
+    struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
+    sendmsg(sock_fd, &msg, 0);
+}
+
+void show_connections(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr)
+{
+    nlh->nlmsg_type = TINYWALL_TYPE_SHOW_CONNS;
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
     sendmsg(sock_fd, &msg, 0);
@@ -293,6 +315,10 @@ int main()
     nlh->nlmsg_pid = getpid();
     nlh->nlmsg_flags = 0;
 
+    /*添加默认规则表*/
+    printf("Load Default Rules\n");
+    load_rules_from_file(sock_fd, &dest_addr, "DEFAULT_RULES");
+
     while (1)
     {
         printf("\nMenu:\n");
@@ -302,7 +328,8 @@ int main()
         printf("3. List Rules\n");
         printf("4. Clear Rules\n");
         printf("5. Store Rules\n");
-        printf("6. Show logs\n");
+        printf("6. Show Conns\n");
+        printf("7. Show Logs\n");
         printf("Choose an option: ");
 
         int choice = 0;
@@ -317,7 +344,7 @@ int main()
             printf("Enter rule filename:\n");
             char filename[256];
             scanf("%s", filename);
-            ret = load_rules_from_file(sock_fd, nlh, &dest_addr, filename);
+            ret = load_rules_from_file(sock_fd, &dest_addr, filename);
             if (ret == -1)
             {
                 printf("Error: file doesn't exist\n");
@@ -330,7 +357,7 @@ int main()
             }
             break;
         case 2:
-            rule_remove(sock_fd, nlh, &dest_addr);
+            rule_remove(sock_fd, &dest_addr);
             break;
         case 3:
             rules_list(sock_fd, nlh, &dest_addr);
@@ -342,6 +369,9 @@ int main()
             rules_store(sock_fd, nlh, &dest_addr);
             break;
         case 6:
+            show_connections(sock_fd, nlh, &dest_addr);
+            break;
+        case 7:
             log_show(sock_fd, nlh, &dest_addr);
             break;
         default:

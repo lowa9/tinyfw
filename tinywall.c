@@ -1,13 +1,5 @@
 // tinywall.c
 #include "tinywall.h"
-
-#ifdef __BIG_ENDIAN__
-#define htonll(x) (x)
-#define ntohll(x) (x)
-#else
-#define htonll(x) (((__u64)htonl((x) & 0xFFFFFFFF) << 32) | htonl((x) >> 32))
-#define ntohll(x) (((__u64)ntohl((x) & 0xFFFFFFFF) << 32) | ntohl((x) >> 32))
-#endif
 #define tinywall_PR_INFO(...) pr_info(__VA_ARGS__)
 #define ktime_add_sec(kt, sval) (ktime_add_ns((kt), (sval) * NSEC_PER_SEC))
 
@@ -19,7 +11,7 @@ static int default_timeout_others = 100;
 static unsigned int default_action = NF_ACCEPT;
 static unsigned short default_logging = 1;
 // 初始化规则链表和锁
-static struct tinywall_rule_table rule_table;
+struct tinywall_rule_table rule_table;
 // 初始化连接表
 struct tinywall_conn_table conn_table;
 // 初始化日志表
@@ -87,20 +79,20 @@ int tinywall_rule_add(tinywall_rule *new_rule)
     rule->smask = new_rule->smask;
     rule->dmask = new_rule->dmask;
     rule->logging = new_rule->logging;
-    printk("tinywall_rule_add");
+
     write_lock(&rule_table.lock);
     list_add_tail(&rule->list, &rule_table.head);
     rule_table.rule_count++;
     write_unlock(&rule_table.lock);
-
-    // 将 __be32 类型的 IP 地址转换为 struct in_addr 类型
-    struct in_addr src_ip, dst_ip;
-    src_ip.s_addr = rule->src_ip;
-    dst_ip.s_addr = rule->dst_ip;
-    printk(KERN_INFO MODULE_NAME ": Add a new rule: %pI4:%d-%d smask:%d -> %pI4:%d-%d dmask:%d, proto: %u, action: %u, logging: %u\n",
-           &src_ip, ntohs(rule->src_port_min), ntohs(rule->src_port_max), ntohs(rule->smask),
-           &dst_ip, ntohs(rule->dst_port_min), ntohs(rule->dst_port_max), ntohs(rule->dmask),
-           ntohs(rule->protocol), ntohs(rule->action), ntohs(rule->logging));
+    printk(KERN_INFO MODULE_NAME ": Added successfully!");
+    // // 将 __be32 类型的 IP 地址转换为 struct in_addr 类型
+    // struct in_addr src_ip, dst_ip;
+    // src_ip.s_addr = rule->src_ip;
+    // dst_ip.s_addr = rule->dst_ip;
+    // printk(KERN_INFO MODULE_NAME ": Add a new rule: %pI4:%d-%d smask:%d -> %pI4:%d-%d dmask:%d, proto: %u, action: %u, logging: %u\n",
+    //        &src_ip, ntohs(rule->src_port_min), ntohs(rule->src_port_max), ntohs(rule->smask),
+    //        &dst_ip, ntohs(rule->dst_port_min), ntohs(rule->dst_port_max), ntohs(rule->dmask),
+    //        ntohs(rule->protocol), ntohs(rule->action), ntohs(rule->logging));
     return 0;
 }
 
@@ -198,48 +190,71 @@ void tinywall_rule_table_destroy(void)
 }
 
 // 查找是否存在这个rule
+static __be32 tinywall_get_subnet_mask(unsigned int mask_bits)
+{
+    if (mask_bits == 0)
+        return 0;
+    else if (mask_bits == 32)
+        return cpu_to_be32(0xFFFFFFFF);
+    else
+        return cpu_to_be32((1 << mask_bits) - 1);
+}
+
 struct tinywall_rule *tinywall_rule_match(struct tinywall_conn *conn)
 {
     bool flag = false;
     struct tinywall_rule *rule = NULL;
-
+    struct tinywall_rule *tmp = NULL;
     read_lock(&rule_table.lock);
     list_for_each_entry(rule, &rule_table.head, list)
     {
-        if (!(conn->protocol == rule->protocol &&
-              (conn->saddr & rule->smask) == (rule->src_ip & rule->smask) &&
-              (conn->daddr & rule->dmask) == (rule->dst_ip & rule->dmask)))
+        __be32 src_mask = tinywall_get_subnet_mask(ntohs(rule->smask));
+        __be32 dst_mask = tinywall_get_subnet_mask(ntohs(rule->dmask));
+        __be32 tmp1 = conn->saddr & src_mask;
+        __be32 tmp2 = rule->src_ip & src_mask;
+        __be32 tmp3 = conn->daddr & dst_mask;
+        __be32 tmp4 = rule->dst_ip & dst_mask;
+        printk("rule->smask,dmask = %u %u,src_mask = %pI4, dst_mask = %pI4, rule->saddr = %pI4, rule->daddr = %pI4\n",
+               ntohs(rule->smask), ntohs(rule->dmask), &src_mask, &dst_mask, &rule->src_ip, &rule->dst_ip);
+        printk("conn->protocol:%u,rule->protocol:%u ", conn->protocol, ntohs(rule->protocol));
+        if (conn->protocol == ntohs(rule->protocol) && tmp1 == tmp2 && tmp3 == tmp4)
         {
-            continue;
+            printk(KERN_INFO MODULE_NAME ": MATCHED!\n");
+            switch (ntohs(rule->protocol))
+            {
+            case IPPROTO_TCP:
+                flag = (conn->tcp.sport >= rule->src_port_min) &&
+                       (conn->tcp.sport <= rule->src_port_max) &&
+                       (conn->tcp.dport >= rule->dst_port_min) &&
+                       (conn->tcp.dport <= rule->dst_port_max);
+                break;
+            case IPPROTO_UDP:
+                flag = (conn->udp.sport >= rule->src_port_min) &&
+                       (conn->udp.sport <= rule->src_port_max) &&
+                       (conn->udp.dport >= rule->dst_port_min) &&
+                       (conn->udp.dport <= rule->dst_port_max);
+                break;
+            case IPPROTO_ICMP:
+                flag = true;
+                break;
+            default:
+                flag = true;
+            }
+            if (flag)
+            {
+                printk(KERN_ERR " *** flag = true and return rule!");
+                tmp = rule;
+                break;
+            }
         }
-        switch (conn->protocol)
+        else
         {
-        case IPPROTO_TCP:
-            flag = conn->tcp.sport >= rule->src_port_min &&
-                   conn->tcp.sport <= rule->src_port_max &&
-                   conn->tcp.dport >= rule->dst_port_min &&
-                   conn->tcp.dport <= rule->dst_port_max;
-            break;
-        case IPPROTO_UDP:
-            flag = conn->udp.sport >= rule->src_port_min &&
-                   conn->udp.sport <= rule->src_port_max &&
-                   conn->udp.dport >= rule->dst_port_min &&
-                   conn->udp.dport <= rule->dst_port_max;
-            break;
-        case IPPROTO_ICMP:
-            flag = true;
-            break;
-        default:
-            flag = true;
+            printk(KERN_ERR MODULE_NAME ": NO MATCHED BUT I'M HERE ANYWAY!\n");
         }
-        if (flag)
-            break;
     }
     read_unlock(&rule_table.lock);
 
-    return flag ? rule : NULL;
-
-    return NULL;
+    return flag ? tmp : NULL;
 }
 /* >----------------------------------连接表部分----------------------------------<*/
 /* CONNTABLE INIT FUNCTIONS */
@@ -300,9 +315,11 @@ struct tinywall_conn *tinywall_connection_create(struct iphdr *iph)
 void tinywall_conn_add(struct tinywall_conn *conn)
 {
     size_t hash = tinywall_hash(conn);
-
+    printk(KERN_ERR " New Hash: %d\n", hash);
     write_lock(&conn_table.lock);
     hlist_add_head(&conn->node, &conn_table.table[hash]);
+    conn_table.conn_count++;
+    printk(KERN_ERR MODULE_NAME ": Conn added\n");
     write_unlock(&conn_table.lock);
 }
 
@@ -376,6 +393,100 @@ bool tinywall_conn_match(struct tinywall_conn *conn, bool is_reverse)
     return false;
 }
 
+void tinywall_conn_show(void)
+{
+    struct tinywall_conn *conn;
+    struct file *file;
+    char buffer[1024]; // 用于存储日志信息的缓冲区
+    int i;
+    // 打开文件，使用 O_WRONLY | O_CREAT | O_APPEND 选项
+    file = filp_open("./conn_table.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (IS_ERR(file))
+    {
+        printk(KERN_ERR "Failed to open conn_table.txt\n");
+        return;
+    }
+
+    read_lock(&conn_table.lock);
+
+    // 读锁保护连接表
+    for (i = 0; i < HASH_SIZE; i++)
+    {
+        hlist_for_each_entry(conn, &conn_table.table[i], node)
+        {
+            printk(KERN_INFO "CONNList: saddr=%pI4, daddr=%pI4, protocol=%u, timeout=%llu\n",
+                   &conn->saddr, &conn->daddr, conn->protocol, ntohll(conn->timeout));
+            if (conn->protocol == IPPROTO_TCP)
+            {
+                snprintf(buffer, sizeof(buffer), "TCP - Connection: saddr=%pI4, daddr=%pI4, protocol=%u, sport=%u, dport=%u, timeout=%llu\n",
+                         &conn->saddr, &conn->daddr, conn->protocol,
+                         ntohs(conn->tcp.sport), ntohs(conn->tcp.dport), ntohll(conn->timeout));
+                // 使用 kernel_write 替代 vfs_write 写入文件
+                int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+                if (rs < 0)
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write failed with error %d\n", rs);
+                }
+                else if (rs != strlen(buffer))
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+                }
+                else
+                {
+                    printk(KERN_INFO MODULE_NAME " CONN: Successfully wrote %d bytes to log.txt\n", rs);
+                }
+
+                memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            }
+            if (conn->protocol == IPPROTO_UDP)
+            {
+                snprintf(buffer, sizeof(buffer), "Connection: saddr=%pI4, daddr=%pI4, protocol=%u, sport=%u, dport=%u,timeout=%llu\n",
+                         &conn->saddr, &conn->daddr, conn->protocol,
+                         ntohs(conn->udp.sport), ntohs(conn->udp.dport), ntohll(conn->timeout));
+                // 使用 kernel_write 替代 vfs_write 写入文件
+                int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+                if (rs < 0)
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write failed with error %d\n", rs);
+                }
+                else if (rs != strlen(buffer))
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+                }
+                else
+                {
+                    printk(KERN_INFO MODULE_NAME " CONN: Successfully wrote %d bytes to log.txt\n", rs);
+                }
+
+                memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            }
+            if (conn->protocol == IPPROTO_ICMP)
+            {
+                snprintf(buffer, sizeof(buffer), "Connection: saddr=%pI4, daddr=%pI4, protocol=%u, type=%u, code=%u, timeout=%llu\n",
+                         &conn->saddr, &conn->daddr, conn->protocol,
+                         conn->icmp.type, conn->icmp.code, ntohll(conn->timeout));
+                // 使用 kernel_write 替代 vfs_write 写入文件
+                int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+                if (rs < 0)
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write failed with error %d\n", rs);
+                }
+                else if (rs != strlen(buffer))
+                {
+                    printk(KERN_ERR MODULE_NAME " CONN: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+                }
+                else
+                {
+                    printk(KERN_INFO MODULE_NAME " CONN: Successfully wrote %d bytes to log.txt\n", rs);
+                }
+
+                memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            }
+        }
+    }
+    read_unlock(&conn_table.lock);
+    filp_close(file, NULL);
+}
 // 销毁连接表
 static void tinywall_conn_table_destroy(void)
 {
@@ -527,9 +638,8 @@ void tinywall_log_show(void)
 {
     struct tinywall_log *log;
     struct file *file;
-    mm_segment_t oldfs;
-    char buffer[4096]; // 用于存储日志信息的缓冲区
-
+    char buffer[1024]; // 用于存储日志信息的缓冲区
+    size_t offset = 0;
     // 打开文件，使用 O_WRONLY | O_CREAT | O_APPEND 选项
     file = filp_open("./log.txt", O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (IS_ERR(file))
@@ -538,37 +648,87 @@ void tinywall_log_show(void)
         return;
     }
 
-    mutex_lock(&log_table.lock);
-    // 锁定日志表
+    mutex_lock(&log_table.lock); // 锁定日志表
     list_for_each_entry(log, &log_table.head, node)
     {
         // 格式化基本日志信息到缓冲区
-        snprintf(buffer, sizeof(buffer), "Index: %u, Timestamp: %llu, Source: %u, Destination: %u, Protocol: %u\n",
-                 ntohl(log->idx), (unsigned long long)ntohll(log->ts),
-                 ntohl(log->saddr), ntohl(log->daddr), log->protocol);
+        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "Index: %u, Timestamp: %llu, saddr: %pI4, daddr: %pI4, Protocol: %u\n",
+                           ntohl(log->idx), (unsigned long long)ntohll(log->ts),
+                           &log->saddr, &log->daddr, log->protocol);
 
         // 根据协议类型添加详细信息
         if (log->protocol == IPPROTO_TCP)
         {
-            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
-                     "TCP - Source Port: %u, Destination Port: %u, State: %u\n",
-                     ntohs(log->tcp.sport), ntohs(log->tcp.dport), log->tcp.state);
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                               "        TCP - Source Port: %u, Destination Port: %u, State: %u\n",
+                               ntohs(log->tcp.sport), ntohs(log->tcp.dport), log->tcp.state);
+
+            // 使用 kernel_write 替代 vfs_write 写入文件
+            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+            if (rs < 0)
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
+            }
+            else if (rs != strlen(buffer))
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+            }
+            else
+            {
+                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
+            }
+
+            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            offset = 0;
         }
         else if (log->protocol == IPPROTO_UDP)
         {
-            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
-                     "UDP - Source Port: %u, Destination Port: %u\n",
-                     ntohs(log->udp.sport), ntohs(log->udp.dport));
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                               "        UDP - Source Port: %u, Destination Port: %u\n",
+                               ntohs(log->udp.sport), ntohs(log->udp.dport));
+
+            // 使用 kernel_write 替代 vfs_write 写入文件
+            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+            if (rs < 0)
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
+            }
+            else if (rs != strlen(buffer))
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+            }
+            else
+            {
+                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
+            }
+
+            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            offset = 0;
         }
         else if (log->protocol == IPPROTO_ICMP)
         {
-            snprintf(buffer + strlen(buffer), sizeof(buffer) - strlen(buffer),
-                     "ICMP - Type: %u, Code: %u\n",
-                     log->icmp.type, log->icmp.code);
-        }
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                               "        ICMP - Type: %u, Code: %u\n",
+                               log->icmp.type, log->icmp.code);
 
-        // 将缓冲区内容写入文件
-        vfs_write(file, buffer, strlen(buffer), &file->f_pos);
+            // 使用 kernel_write 替代 vfs_write 写入文件
+            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+            if (rs < 0)
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
+            }
+            else if (rs != strlen(buffer))
+            {
+                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+            }
+            else
+            {
+                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
+            }
+
+            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+            offset = 0;
+        }
     }
     mutex_unlock(&log_table.lock);
 
@@ -612,27 +772,23 @@ static unsigned int firewall_hook(void *priv,
         return NF_DROP;
     }
 
-    printk(KERN_INFO MODULE_NAME ": Created connection: saddr=%pI4, daddr=%pI4, protocol=%u",
-           &conn->saddr, &conn->daddr, conn->protocol);
+    printk(KERN_INFO MODULE_NAME ": Created a connection: saddr=%pI4, daddr=%pI4",
+           &conn->saddr, &conn->daddr);
 
     if (conn->protocol == IPPROTO_TCP)
     {
-        printk(", sport=%u, dport=%u, state=%u\n",
+        printk("    protocol: TCP, sport=%u, dport=%u, state=%u\n",
                ntohs(conn->tcp.sport), ntohs(conn->tcp.dport), conn->tcp.state);
     }
     else if (conn->protocol == IPPROTO_UDP)
     {
-        printk(", sport=%u, dport=%u\n",
+        printk("    protocol: UDP, sport=%u, dport=%u\n",
                ntohs(conn->udp.sport), ntohs(conn->udp.dport));
     }
     else if (conn->protocol == IPPROTO_ICMP)
     {
-        printk(", type=%u, code=%u\n",
+        printk("    protocol: ICMP, type=%u, code=%u\n",
                conn->icmp.type, conn->icmp.code);
-    }
-    else
-    {
-        printk("\n");
     }
 
     struct tinywall_rule *rule = NULL;
@@ -647,6 +803,7 @@ static unsigned int firewall_hook(void *priv,
         if (default_logging)
         {
             log = tinywall_log_create(skb, NF_ACCEPT);
+            tinywall_log_add(log);
         }
         goto out;
     }
@@ -655,7 +812,7 @@ static unsigned int firewall_hook(void *priv,
     // 如果是tcp,那么肯定是SYN包来请求新建连接
     if (iph->protocol == IPPROTO_TCP && tcp_flag_word((void *)iph + iph->ihl * 4) != TCP_FLAG_SYN)
     {
-        printk(KERN_INFO MODULE_NAME ": Not a SYN packet, DROP.\n");
+        printk(KERN_ERR MODULE_NAME ": Not a SYN packet, DROP.\n");
         action = NF_DROP;
         if (default_logging)
         {
@@ -682,39 +839,56 @@ static unsigned int firewall_hook(void *priv,
         }
     }
 
-    // 开始匹配rule_table的各个entry
+    // 连接表中不存在,于是开始匹配rule_table的各个entry,看是否放行
     rule = tinywall_rule_match(conn);
-    if (rule)
+    if (rule) // 匹配到规则
     {
-        res = ntohl(rule->action);
-        if (rule->logging)
-        {
-            printk(KERN_INFO MODULE_NAME ": Logging enabled.\n");
-            log = tinywall_log_create(skb, ntohl(rule->action));
-            tinywall_log_add(log);
-        }
-        printk(KERN_INFO MODULE_NAME ": Rule matched, action: %d\n", res);
+        res = ntohs(rule->action);
         if (res == NF_ACCEPT)
         {
             new_conn = true;
             tinywall_conn_add(conn);
-            printk(KERN_INFO MODULE_NAME ": New connection added.\n");
+            printk(KERN_INFO MODULE_NAME ": New connection added, action: NF_ACCEPT.\n");
+            if (rule->logging)
+            {
+                printk(KERN_INFO MODULE_NAME ": Logging enabled.\n");
+                log = tinywall_log_create(skb, ntohl(rule->action));
+                tinywall_log_add(log);
+            }
         }
         else
         {
-            res = default_action;
-            if (default_logging)
+            printk(KERN_INFO MODULE_NAME ": Matched but dismissed, action: NF_DROP.\n");
+            if (ntohs(rule->logging))
             {
-                log = tinywall_log_create(skb, default_action);
+                printk(KERN_INFO " CONN: Logging enabled.\n");
+                log = tinywall_log_create(skb, ntohl(rule->action));
                 tinywall_log_add(log);
             }
-            printk(KERN_INFO MODULE_NAME ": No match rules,use the default action.\n");
-            if (res == NF_ACCEPT)
-            {
-                new_conn = true;
-                tinywall_conn_add(conn);
-                printk(KERN_INFO MODULE_NAME ": New connection added.\n");
-            }
+        }
+    }
+    else
+    { // 没有匹配到规则,使用默认动作
+        if (default_action == NF_ACCEPT)
+        {
+            printk(KERN_INFO MODULE_NAME " CONN: No matched rules,use the default action: NF_ACCEPT.\n");
+        }
+        if (default_action == NF_DROP)
+        {
+            printk(KERN_INFO MODULE_NAME " CONN: No matched rules,use the default action: NF_DROP.\n");
+        }
+        res = default_action;
+        if (res == NF_ACCEPT)
+        {
+            new_conn = true;
+            tinywall_conn_add(conn);
+            printk(KERN_INFO MODULE_NAME " CONN: New connection added.\n");
+        }
+        if (default_logging)
+        {
+            printk(KERN_INFO MODULE_NAME " CONN: Default Logging enabled.\n");
+            log = tinywall_log_create(skb, default_action);
+            tinywall_log_add(log);
         }
     }
 
@@ -725,88 +899,6 @@ out:
     }
     return res;
 }
-// struct iphdr *ip_header;
-// struct tcphdr *tcp_header;
-// struct udphdr *udp_header;
-// struct icmphdr *icmp_header;
-// tinywall_rule *rule;
-// int match = -1; // 匹配动作
-
-// /*空数据包或者空ip头*/
-// if (!skb)
-// {
-//     return NF_ACCEPT;
-// }
-
-// ip_header = ip_hdr(skb);
-
-// if (!ip_header)
-// {
-//     return NF_ACCEPT;
-// }
-
-// // 处理ICMP协议
-// /*TODO_1:每一个有效ACCEPT都要在连接表中新建连接
-// TODO_2:根据rule.logging字段是否记录日志*/
-// if (ip_header->protocol == IPPROTO_ICMP)
-// {
-//     // printk("not tcp");
-//     return NF_ACCEPT;
-// }
-
-// if (ip_header->protocol == IPPROTO_TCP)
-// {
-//     tcp_header = tcp_hdr(skb);
-//     if (!tcp_header)
-//     {
-//         printk(KERN_ERR MODULE_NAME ": TCP header is NULL\n");
-//         return NF_ACCEPT;
-//     }
-//     // 检测是否匹配上规则
-//     tinywall_rule *rule;
-//     read_lock(&rule_table.lock);
-//     list_for_each_entry(rule, &rule_table.head, list)
-//     {
-//         if (((rule->src_ip == ip_header->saddr || rule->src_ip == 0) ||
-//              (rule->src_ip & rule->smask) == (ip_header->saddr & rule->smask)) &&
-//             ((rule->dst_ip == ip_header->daddr || rule->dst_ip == 0) ||
-//              (rule->dst_ip & rule->dmask) == (ip_header->daddr & rule->dmask)) &&
-//             (ntohs(tcp_header->source) >= rule->src_port_min && ntohs(tcp_header->source) <= rule->src_port_max) &&
-//             (ntohs(tcp_header->dest) >= rule->dst_port_min && ntohs(tcp_header->dest) <= rule->dst_port_max) &&
-//             (rule->protocol == ip_header->protocol || rule->protocol == 0))
-//         {
-//             match = rule->action;
-//             break;
-//         }
-//     }
-//     read_unlock(&rule_table.lock);
-
-//     if (match == NF_ACCEPT)
-//     {
-//         printk(KERN_INFO MODULE_NAME ": Packet matched rule, rule's action is NF_ACCEPT.\n");
-//         return NF_ACCEPT;
-//     }
-//     else if (match == NF_DROP)
-//     {
-//         printk(KERN_INFO MODULE_NAME ": Packet matched rule, rule's action is NF_DROP.\n");
-//         return NF_DROP;
-//     }
-//     return NF_ACCEPT;
-
-//     if (match == NF_ACCEPT)
-//     {
-//         printk(KERN_INFO MODULE_NAME ": Packet matched rule, rule's action is NF_ACCEPT.\n");
-//         return NF_ACCEPT;
-//     }
-//     else if (match == NF_DROP)
-//     {
-//         printk(KERN_INFO MODULE_NAME ": Packet matched rule, rule's action is NF_DROP.\n");
-//         return NF_DROP;
-//     }
-//     return NF_ACCEPT;
-// }
-// // 默认通过
-// return NF_ACCEPT;
 
 // 定义Netfilter钩子
 static struct nf_hook_ops firewall_nfho = {
@@ -872,7 +964,9 @@ EXPORT_SYMBOL(tinywall_rule_remove);
 EXPORT_SYMBOL(tinywall_rule_add);
 EXPORT_SYMBOL(tinywall_rules_clear);
 EXPORT_SYMBOL(tinywall_log_show);
+EXPORT_SYMBOL(tinywall_conn_show);
 EXPORT_SYMBOL(rule_table);
+EXPORT_SYMBOL(conn_table);
 MODULE_LICENSE("GPL");
 MODULE_AUTHOR("Sun Xiaokai suxiaokai34@gmail.com");
 MODULE_DESCRIPTION("A Tiny Netfilter Firewall Module");
