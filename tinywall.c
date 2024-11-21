@@ -8,14 +8,14 @@ static int default_timeout_tcp = 300;
 static int default_timeout_udp = 180;
 static int default_timeout_icmp = 100;
 static int default_timeout_others = 100;
-static unsigned int default_action = NF_ACCEPT;
+static unsigned short default_action = NF_DROP;
 static unsigned short default_logging = 1;
 // 初始化规则链表和锁
 struct tinywall_rule_table rule_table;
 // 初始化连接表
 struct tinywall_conn_table conn_table;
 // 初始化日志表
-struct tinywall_logtable log_table;
+struct tinywall_log_table log_table;
 // 连接超时定时器表
 static struct timer_list conn_timer;
 
@@ -630,83 +630,73 @@ void tinywall_log_show(void)
     list_for_each_entry(log, &log_table.head, node)
     {
         // 格式化基本日志信息到缓冲区
-        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "Index: %u, Timestamp: %llu, saddr: %pI4, daddr: %pI4, Protocol: %u\n",
+        offset += snprintf(buffer + offset, sizeof(buffer) - offset, "Index: %u, Timestamp: %llu, saddr: %pI4, daddr: %pI4\n",
                            ntohl(log->idx), (unsigned long long)ntohll(log->ts),
-                           &log->saddr, &log->daddr, log->protocol);
+                           &log->saddr, &log->daddr);
 
         // 根据协议类型添加详细信息
         if (log->protocol == IPPROTO_TCP)
         {
             offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                               "        TCP - Source Port: %u, Destination Port: %u, State: %u\n",
-                               ntohs(log->tcp.sport), ntohs(log->tcp.dport), log->tcp.state);
+                               "    protocol:TCP - Source Port: %u, Destination Port: %u,",
+                               ntohs(log->tcp.sport), ntohs(log->tcp.dport));
 
-            // 使用 kernel_write 替代 vfs_write 写入文件
-            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
-            if (rs < 0)
+            if (log->tcp.state == TINYWALL_TCP_SYN_RECEIVED)
             {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
+                offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                                   " State: SYN_RECEIVED.");
             }
-            else if (rs != strlen(buffer))
+            else if (log->tcp.state == TINYWALL_TCP_ESTABLISHED)
             {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+                offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                                   " State: ESTABLISHED.");
             }
-            else
+            else if (log->tcp.state == TINYWALL_TCP_CLOSED)
             {
-                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
+                offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                                   " State: CLOSED.");
             }
-
-            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
-            offset = 0;
         }
         else if (log->protocol == IPPROTO_UDP)
         {
             offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                               "        UDP - Source Port: %u, Destination Port: %u\n",
+                               "    protocol:UDP - Source Port: %u, Destination Port: %u",
                                ntohs(log->udp.sport), ntohs(log->udp.dport));
-
-            // 使用 kernel_write 替代 vfs_write 写入文件
-            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
-            if (rs < 0)
-            {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
-            }
-            else if (rs != strlen(buffer))
-            {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
-            }
-            else
-            {
-                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
-            }
-
-            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
-            offset = 0;
         }
         else if (log->protocol == IPPROTO_ICMP)
         {
             offset += snprintf(buffer + offset, sizeof(buffer) - offset,
-                               "        ICMP - Type: %u, Code: %u\n",
+                               "    protocol:ICMP - Type: %u, Code: %u",
                                log->icmp.type, log->icmp.code);
-
-            // 使用 kernel_write 替代 vfs_write 写入文件
-            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
-            if (rs < 0)
-            {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
-            }
-            else if (rs != strlen(buffer))
-            {
-                printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
-            }
-            else
-            {
-                printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
-            }
-
-            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
-            offset = 0;
         }
+        if (log->action == NF_ACCEPT)
+        {
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                               " Action: NF_ACCEPT.\n");
+        }
+        else if (log->action == NF_DROP)
+        {
+            offset += snprintf(buffer + offset, sizeof(buffer) - offset,
+                               " Action: NF_DROP.\n");
+        }
+
+        // 使用 kernel_write 替代 vfs_write 写入文件
+        int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+        if (rs < 0)
+        {
+            printk(KERN_ERR MODULE_NAME " LOG: kernel_write failed with error %d\n", rs);
+        }
+        else if (rs != strlen(buffer))
+        {
+            printk(KERN_ERR MODULE_NAME " LOG: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+        }
+        else
+        {
+            printk(KERN_INFO MODULE_NAME " LOG: Successfully wrote %d bytes to log.txt\n", rs);
+        }
+
+        memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
+        offset = 0;
     }
     mutex_unlock(&log_table.lock);
 
@@ -729,14 +719,18 @@ void tinywall_log_table_destroy(void)
     mutex_unlock(&log_table.lock);
 }
 /* >----------------------------------子模块部分----------------------------------<*/
+// 捕获所有入站的报文部分
 static unsigned int firewall_hook(void *priv,
                                   struct sk_buff *skb,
                                   const struct nf_hook_state *state)
 {
     bool is_new_conn = false;
     int res = 0;
-    unsigned int action = default_action;
     struct iphdr *iph = ip_hdr(skb);
+    struct tcphdr *tcphr = NULL;
+    struct tinywall_rule *rule = NULL;
+    struct tinywall_log *log = NULL;
+    struct tinywall_conn *conn = NULL;
     if (!iph)
     {
         printk(KERN_ERR MODULE_NAME ": Invalid IP header.\n");
@@ -744,7 +738,7 @@ static unsigned int firewall_hook(void *priv,
     }
 
     // 从skb结构中创建连接对象
-    struct tinywall_conn *conn = tinywall_connection_create(iph);
+    conn = tinywall_connection_create(iph);
 
     if (!conn)
     {
@@ -771,104 +765,155 @@ static unsigned int firewall_hook(void *priv,
                conn->icmp.type, conn->icmp.code);
     }
 
-    struct tinywall_rule *rule = NULL;
-    struct tinywall_log *log = NULL;
-
-    // 在conn_table中查找当前连接
+    /* >----------------------------------查找现存连接----------------------------------<*/
     // 一个连接分双向,不过hash函数已经对顺序进行了处理,不必再考虑
     if (tinywall_conn_match(conn))
     {
         printk(KERN_INFO MODULE_NAME "CONN: Connection exists, ACCEPT.\n");
-        action = NF_ACCEPT;
         if (default_logging)
         {
             log = tinywall_log_create(skb, NF_ACCEPT);
+            log->tcp.state = TINYWALL_TCP_ESTABLISHED;
             tinywall_log_add(log);
         }
         goto out;
     }
 
-    // 没匹配到现有连接
+    /* >----------------------------------没匹配到现存连接----------------------------------<*/
     // 如果是tcp,那么只能由syn包来创建连接,检验是不是syn包
-    if (iph->protocol == IPPROTO_TCP && tcp_flag_word((void *)iph + iph->ihl * 4) != TCP_FLAG_SYN)
+    if (iph->protocol == IPPROTO_TCP)
     {
-        printk(KERN_ERR MODULE_NAME ": Not a SYN packet, DROP.\n");
-        action = NF_DROP;
-        if (default_logging)
+        if (tcp_flag_word((void *)iph + iph->ihl * 4) == TCP_FLAG_SYN)
         {
-            log = tinywall_log_create(skb, NF_DROP);
-            tinywall_log_add(log);
+            rule = tinywall_rule_match(conn);
+            if (rule != NULL && ntohs(rule->action) == NF_ACCEPT && ntohs(rule->logging))
+            {
+                is_new_conn = true;
+                conn->tcp.state = TINYWALL_TCP_SYN_RECEIVED;
+                tinywall_conn_add(conn);
+
+                printk(KERN_INFO MODULE_NAME ": New TCP connection added, action: NF_ACCEPT.\n");
+                if (rule->logging)
+                {
+                    log = tinywall_log_create(skb, NF_ACCEPT);
+                    log->tcp.state = TINYWALL_TCP_SYN_RECEIVED;
+                    tinywall_log_add(log);
+                }
+            }
+            else if (rule != NULL && ntohs(rule->action) == NF_DROP && ntohs(rule->logging))
+            {
+                printk(KERN_INFO MODULE_NAME ": Logging enabled.\n");
+                log = tinywall_log_create(skb, NF_DROP);
+                log->tcp.state = TINYWALL_TCP_CLOSED;
+                tinywall_log_add(log);
+            }
+            else if (rule == NULL && default_action == NF_ACCEPT && default_logging)
+            {
+                printk(KERN_ERR MODULE_NAME ": No matching rule found, Default accept. Default_logging enabled!.\n");
+                is_new_conn = true;
+                conn->tcp.state = TINYWALL_TCP_SYN_RECEIVED; // 默认接受,那么开始接受连接
+                tinywall_conn_add(conn);
+                printk(KERN_INFO MODULE_NAME ": Added one tcp conn due to the default action: NF_ACCEPT.\n");
+                log = tinywall_log_create(skb, default_action);
+                log->tcp.state = TINYWALL_TCP_SYN_RECEIVED;
+                tinywall_log_add(log);
+            }
+            else if (rule == NULL && default_action == NF_DROP && default_logging)
+            {
+                printk(KERN_ERR MODULE_NAME ": No matching rule found, Default drop. Default_logging enabled!\n");
+                log = tinywall_log_create(skb, NF_DROP);
+                log->tcp.state = TINYWALL_TCP_CLOSED;
+                tinywall_log_add(log);
+            }
+        }
+        else // 不是syn包
+        {
+            if (default_action && default_logging)
+            {
+                printk(KERN_ERR MODULE_NAME ": No matching rule found, Default accept. Default_logging enabled!\n");
+                is_new_conn = true;
+                conn->tcp.state = TINYWALL_TCP_ESTABLISHED; // 这里是因为默认放行，且不是syn包,所以是 established
+
+                tinywall_conn_add(conn);
+                log = tinywall_log_create(skb, default_action);
+                log->tcp.state = conn->tcp.state;
+                tinywall_log_add(log);
+            }
+            else if (default_action == NF_DROP && default_logging)
+            {
+                printk(KERN_ERR MODULE_NAME ": No matching rule found, Default drop. Default_logging enabled!\n");
+                log = tinywall_log_create(skb, NF_DROP);
+                log->tcp.state = TINYWALL_TCP_CLOSED;
+                tinywall_log_add(log);
+            }
         }
         goto out;
     }
 
-    // 如果是icmp包,那么只有echo包可以通过,检验是不是echo包
+    // 如果是icmp包,那么只有拥有对应echorequest的echo reply包可以通过,检验是否是echo reply包
     if (iph->protocol == IPPROTO_ICMP)
     {
-        struct icmphdr *icmphr = (void *)iph + iph->ihl * 4;
-        if (icmphr->type != ICMP_ECHO)
+        struct icmphdr *icmphr = icmp_hdr(skb);
+        struct tinywall_conn *tmp_conn = NULL;
+        if (icmphr->type == ICMP_ECHOREPLY)
         {
-            printk(KERN_INFO MODULE_NAME ": Not a echo request, DROP.\n");
-            action = NF_DROP;
+            tmp_conn = tinywall_conn_get_entry(conn);
+            if (tmp_conn != NULL)
+            {
+                if (tmp_conn->protocol == IPPROTO_ICMP && tmp_conn->icmp.type == ICMP_ECHO)
+                {
+                    printk(KERN_INFO MODULE_NAME ": Matched echo reply, ACCEPT.\n");
+                    log = tinywall_log_create(skb, NF_ACCEPT);
+                    tinywall_log_add(log);
+                }
+            }
+        }
+        else
+        {
+            printk(KERN_INFO MODULE_NAME ": Not a echo reply, DROP.\n");
             if (default_logging)
             {
                 log = tinywall_log_create(skb, NF_DROP);
                 tinywall_log_add(log);
             }
-            goto out;
         }
+        goto out;
     }
 
-    // 连接表中不存在,于是开始匹配rule_table的各个entry,看是否放行
-    rule = tinywall_rule_match(conn);
-    if (rule) // 匹配到规则
+    // UDP 包
+    if (iph->protocol == IPPROTO_UDP)
     {
-        res = ntohs(rule->action);
-        if (res == NF_ACCEPT)
+        rule = tinywall_rule_match(conn);
+        // 匹配到规则
+        if (rule && ntohs(rule->action) == NF_ACCEPT && ntohs(rule->logging))
         {
+            printk(KERN_INFO MODULE_NAME ": UDP rule matched, rule_action: NF_ACCEPT.rule_logging: enabled!\n");
             is_new_conn = true;
             tinywall_conn_add(conn);
-            printk(KERN_INFO MODULE_NAME ": New connection added, action: NF_ACCEPT.\n");
-            if (rule->logging)
-            {
-                printk(KERN_INFO MODULE_NAME ": Logging enabled.\n");
-                log = tinywall_log_create(skb, ntohl(rule->action));
-                tinywall_log_add(log);
-            }
+            log = tinywall_log_create(skb, ntohs(rule->action));
+            tinywall_log_add(log);
         }
-        else
+        else if (rule && ntohs(rule->action) == NF_DROP && ntohs(rule->logging))
         {
-            printk(KERN_INFO MODULE_NAME ": Matched but dismissed, action: NF_DROP.\n");
-            if (ntohs(rule->logging))
-            {
-                printk(KERN_INFO " CONN: Logging enabled.\n");
-                log = tinywall_log_create(skb, ntohl(rule->action));
-                tinywall_log_add(log);
-            }
+            printk(KERN_INFO MODULE_NAME ": UDP rule matched, rule_action: NF_DROP, rule_logging: enabled!\n");
+            log = tinywall_log_create(skb, ntohs(rule->action));
+            tinywall_log_add(log);
         }
-    }
-    else
-    { // 没有匹配到规则,使用默认动作
-        res = default_action;
-        if (default_action == NF_ACCEPT)
-        {
-            printk(KERN_INFO MODULE_NAME " CONN: No matched rules,use the default action: NF_ACCEPT.\n");
+        else if (rule == NULL && default_action == NF_ACCEPT && default_logging)
+        { // 没有匹配到规则,使用默认动作
+            printk(KERN_INFO MODULE_NAME ": UDP rule not matched, default_action: NF_ACCEPT, default_logging: enabled!\n");
             is_new_conn = true;
             tinywall_conn_add(conn);
-            printk(KERN_INFO MODULE_NAME " CONN: New connection added.\n");
+            log = tinywall_log_create(skb, default_action);
+            tinywall_log_add(log);
         }
-        if (default_action == NF_DROP)
+        else if (rule == NULL && default_action == NF_DROP && default_logging)
         {
-            printk(KERN_INFO MODULE_NAME " CONN: No matched rules,use the default action: NF_DROP.\n");
-        }
-        if (default_logging)
-        {
-            printk(KERN_INFO MODULE_NAME " CONN: Default Logging enabled.\n");
+            printk(KERN_INFO MODULE_NAME ": UDP rule not matched, default_action: NF_DROP, default_logging: enabled!\n");
             log = tinywall_log_create(skb, default_action);
             tinywall_log_add(log);
         }
     }
-
 out:
     if (!is_new_conn)
     {
@@ -876,14 +921,53 @@ out:
     }
     return res;
 }
+// 处理本地出站流量,主要是处理icmp请求报文和发出去的tcp syn报文
+unsigned int handle_local_out(void *priv, struct sk_buff *skb, const struct nf_hook_state *state)
+{
+    struct iphdr *iph = ip_hdr(skb);
+    if (!iph)
+    {
+        printk(KERN_ERR " LOCAL_OUT: Invalid IP header.\n");
+    }
+    struct icmphdr *icmph;
+    tinywall_conn *conn;
+    conn = tinywall_connection_create(iph);
+    // 处理发出去的icmp请求报文,建立虚拟连接以用来等待对端的响应echo reply
+    if (iph->protocol == IPPROTO_ICMP)
+    {
+        icmph = icmp_hdr(skb);
+        if (icmph->type == ICMP_ECHO)
+        {
+            tinywall_conn_add(conn);
+            printk(KERN_INFO MODULE_NAME " LOCAL OUT: New ICMP connection added.\n");
+        }
+    }
+    else if (iph->protocol == IPPROTO_TCP)
+    {
+        // 处理发出去的tcp syn报文,建立虚拟连接以用来等待对端的响应syn reply
+        if (tcp_flag_word((void *)iph + iph->ihl * 4) == TCP_FLAG_SYN)
+        {
+            tinywall_conn_add(conn);
+            printk(KERN_INFO MODULE_NAME " LOCAL OUT: New TCP connection added.\n");
+        }
+    }
+    return NF_ACCEPT;
+}
 
 // 定义Netfilter钩子
-static struct nf_hook_ops firewall_nfho = {
-    .hook = firewall_hook,
-    .pf = PF_INET,
-    //.hooknum = NF_INET_FORWARD,
-    .hooknum = NF_INET_PRE_ROUTING,
-    .priority = NF_IP_PRI_FIRST,
+static struct nf_hook_ops firewall_nfho[] = {
+    {
+        .hook = firewall_hook,
+        .pf = PF_INET,
+        .hooknum = NF_INET_PRE_ROUTING,
+        .priority = NF_IP_PRI_FIRST,
+    },
+    {
+        .hook = handle_local_out,
+        .pf = PF_INET,
+        .hooknum = NF_INET_LOCAL_OUT,
+        .priority = NF_IP_PRI_FIRST,
+    },
 };
 
 // 模块初始化
@@ -897,7 +981,7 @@ static int __init firewall_init(void)
     // 初始化日志表
     tinywall_log_table_init();
     // 注册Netfilter钩子
-    ret = nf_register_net_hook(&init_net, &firewall_nfho);
+    ret = nf_register_net_hooks(&init_net, firewall_nfho, 2);
     if (ret)
     {
         printk(KERN_ERR MODULE_NAME ": Failed to register nethook\n");
@@ -915,7 +999,7 @@ static int __init firewall_init(void)
 static void __exit firewall_exit(void)
 {
     // 注销Netfilter钩子
-    nf_unregister_net_hook(&init_net, &firewall_nfho);
+    nf_unregister_net_hooks(&init_net, firewall_nfho, 2);
     printk(KERN_INFO MODULE_NAME ": Netfilter hook unregistered.\n");
     // 销毁定时器
     del_timer(&conn_timer);

@@ -17,7 +17,9 @@
         "typeinfo": "c",
         "icmp.h": "c",
         "udp.h": "c",
-        "ip.h": "c"
+        "ip.h": "c",
+        "public.h": "c"
     },
-    "C_Cpp.errorSquiggles": "enabled"
+    "C_Cpp.errorSquiggles": "enabled",
+    "marscode.chatLanguage": "cn"
 }

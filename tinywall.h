@@ -113,7 +113,7 @@ struct tinywall_conn_table
 };
 
 /* >----------------------------------日志表----------------------------------<*/
-struct tinywall_logtable
+struct tinywall_log_table
 {
     struct mutex lock;
     unsigned int log_num;
@@ -199,7 +199,6 @@ static inline size_t tinywall_hash(struct tinywall_conn *conn)
         hash = jhash_2words(ntohs(port1), ntohs(port2), hash);
         break;
     case IPPROTO_ICMP:
-        hash = jhash_2words(conn->icmp.type, conn->icmp.code, hash);
         break;
     }
     // 返回最终的哈希值
