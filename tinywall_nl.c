@@ -85,8 +85,10 @@ static void nl_recv_msg(struct sk_buff *skb)
         read_lock(&rule_table.lock);
         list_for_each_entry(tmp, &rule_table.head, list)
         {
-            snprintf(buffer, sizeof(buffer), "Index: %d,saddr=%pI4/%u, daddr=%pI4/%u, sport:%u~%u, dport:%u~%u, protocol=%d\n",
-                     i++, &tmp->src_ip, ntohs(tmp->smask), &tmp->dst_ip, ntohs(tmp->dmask), ntohs(tmp->src_port_min), ntohs(tmp->src_port_max), ntohs(tmp->dst_port_min), ntohs(tmp->dst_port_max), ntohs(tmp->protocol));
+            snprintf(buffer, sizeof(buffer), "Index: %d,saddr=%pI4/%u, daddr=%pI4/%u, sport:%u~%u, dport:%u~%u, protocol=%d, action=%u, logging=%u\n",
+                     i++, &tmp->src_ip, ntohs(tmp->smask), &tmp->dst_ip, ntohs(tmp->dmask), 
+                     ntohs(tmp->src_port_min), ntohs(tmp->src_port_max), ntohs(tmp->dst_port_min), ntohs(tmp->dst_port_max), 
+                     ntohs(tmp->protocol),ntohs(tmp->action), ntohs(tmp->logging));
             int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
             if (rs < 0)
             {

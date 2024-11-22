@@ -26,3 +26,6 @@ rule_table.txt
 rules
 log.txt
 conn_table.txt
+new_rules
+nc_rules
+ping_rules
