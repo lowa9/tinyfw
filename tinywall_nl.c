@@ -53,9 +53,9 @@ static void nl_recv_msg(struct sk_buff *skb)
     else if (nlh->nlmsg_type == TINYWALL_TYPE_DEL_RULE)
     {
         rule_id_to_delete = nlh->nlmsg_flags;
-        printk(KERN_INFO MODULE_NAME ":_nl: Received a rule to delete.\n");
-        printk(KERN_INFO MODULE_NAME ":_nl: delete the rule with ID: %d\n", rule_id_to_delete);
+        printk(KERN_INFO MODULE_NAME "_nl: Received a rule to delete.\n");
         tinywall_rule_remove(rule_id_to_delete);
+        printk(KERN_INFO MODULE_NAME "_nl: Removed the rule with ID: %d\n", rule_id_to_delete);
     }
     else if (nlh->nlmsg_type == TINYWALL_TYPE_LIST_RULES)
     {
@@ -70,18 +70,41 @@ static void nl_recv_msg(struct sk_buff *skb)
     else if (nlh->nlmsg_type == TINYWALL_TYPE_STORE_RULES)
     {
         printk(KERN_INFO MODULE_NAME "_nl: Received a request to store rules.\n");
-        int num = rule_table.rule_count;
         int upid = nlh->nlmsg_pid;
         tinywall_rule *tmp = NULL;
+        struct file *file;
+        char buffer[1024]; // 用于存储规则信息的缓冲区
+        int i = 0;
+        file = filp_open("./rule_table.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (IS_ERR(file))
+        {
+            printk(KERN_ERR "Failed to open rule_table.txt\n");
+            return;
+        }
 
         read_lock(&rule_table.lock);
         list_for_each_entry(tmp, &rule_table.head, list)
         {
-            if (tmp != NULL)
-                nl_send_msg_rule(tmp, upid, num);
+            snprintf(buffer, sizeof(buffer), "Index: %d,saddr=%pI4/%u, daddr=%pI4/%u, sport:%u~%u, dport:%u~%u, protocol=%d\n",
+                     i++, &tmp->src_ip, ntohs(tmp->smask), &tmp->dst_ip, ntohs(tmp->dmask), ntohs(tmp->src_port_min), ntohs(tmp->src_port_max), ntohs(tmp->dst_port_min), ntohs(tmp->dst_port_max), ntohs(tmp->protocol));
+            int rs = kernel_write(file, buffer, strlen(buffer), &file->f_pos);
+            if (rs < 0)
+            {
+                printk(KERN_ERR MODULE_NAME " RULE: kernel_write failed with error %d\n", rs);
+            }
+            else if (rs != strlen(buffer))
+            {
+                printk(KERN_ERR MODULE_NAME " RULE: kernel_write wrote only %d bytes out of %zu\n", rs, strlen(buffer));
+            }
+            else
+            {
+                printk(KERN_INFO MODULE_NAME " RULE: Successfully wrote %d bytes to rule_table.\n", rs);
+            }
+            memset(buffer, 0, sizeof(buffer)); // 清空缓冲区
         }
         read_unlock(&rule_table.lock);
-        printk(KERN_INFO MODULE_NAME "_nl: Finish sending all rules.\n");
+        filp_close(file, NULL);
+        printk(KERN_INFO MODULE_NAME "_nl: Finish writing all rules.\n");
     }
     else if (nlh->nlmsg_type == TINYWALL_TYPE_SHOW_CONNS)
     {

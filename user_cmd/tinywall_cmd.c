@@ -51,9 +51,8 @@ int rule_add(int sock_fd, struct sockaddr_nl *dest_addr, struct tinywall_rule_us
 }
 
 // 移除规则
-void rule_remove(int sock_fd, struct sockaddr_nl *dest_addr)
+void rule_remove(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr)
 {
-    struct nlmsghdr *nlh = malloc(NLMSG_SPACE(sizeof(unsigned int)));
     printf("Enter rule ID to remove: ");
     unsigned int rule_id;
     scanf("%u", &rule_id);
@@ -62,7 +61,10 @@ void rule_remove(int sock_fd, struct sockaddr_nl *dest_addr)
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
 
-    sendmsg(sock_fd, &msg, 0);
+    if (sendmsg(sock_fd, &msg, 0) < 0)
+    {
+        perror("sendmsg");
+    }
 }
 
 // 列出规则
@@ -72,8 +74,10 @@ void rules_list(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr
 
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
-
-    sendmsg(sock_fd, &msg, 0);
+    if (sendmsg(sock_fd, &msg, 0) < 0)
+    {
+        perror("sendmsg");
+    }
 }
 
 // 清空规则
@@ -82,7 +86,10 @@ void rules_clear(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_add
     nlh->nlmsg_type = TINYWALL_TYPE_CLEAR_RULES;
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
-    sendmsg(sock_fd, &msg, 0);
+    if (sendmsg(sock_fd, &msg, 0) < 0)
+    {
+        perror("sendmsg");
+    }
 }
 
 // 从文件中读取规则并添加
@@ -161,72 +168,72 @@ void rules_store(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_add
     struct iovec iov = {.iov_base = (void *)nlh, .iov_len = nlh->nlmsg_len};
     struct msghdr msg = {.msg_name = (void *)dest_addr, .msg_namelen = sizeof(*dest_addr), .msg_iov = &iov, .msg_iovlen = 1};
 
-    // 接收缓冲区
-    char buffer[65535];
-    struct iovec iov_recv = {buffer, sizeof(buffer)};
-    struct msghdr msg_recv = {NULL};
-    struct nlmsghdr *nlh_recv = NULL;
-    int ret;
-    int count = 0;
-    // 从内核接受数据
-    msg_recv.msg_name = (void *)&dest_addr;
-    msg_recv.msg_namelen = sizeof(dest_addr);
-    msg_recv.msg_iov = &iov_recv;
-    msg_recv.msg_iovlen = 1;
+    // // 接收缓冲区
+    // char buffer[65535];
+    // struct iovec iov_recv = {buffer, sizeof(buffer)};
+    // struct msghdr msg_recv = {NULL};
+    // struct nlmsghdr *nlh_recv = NULL;
+    // int ret;
+    // int count = 0;
+    // // 从内核接受数据
+    // msg_recv.msg_name = (void *)&dest_addr;
+    // msg_recv.msg_namelen = sizeof(dest_addr);
+    // msg_recv.msg_iov = &iov_recv;
+    // msg_recv.msg_iovlen = 1;
     // 发送store命令
     sendmsg(sock_fd, &msg, 0);
-    while (1)
-    {
-        int num;
-        ret = recvmsg(sock_fd, &msg_recv, 0);
-        if (ret < 0)
-        {
-            perror("recvmsg");
-            break;
-        }
+    // while (1)
+    // {
+    //     int num;
+    //     ret = recvmsg(sock_fd, &msg_recv, 0);
+    //     if (ret < 0)
+    //     {
+    //         perror("recvmsg");
+    //         break;
+    //     }
 
-        nlh = (struct nlmsghdr *)buffer;
+    //     nlh = (struct nlmsghdr *)buffer;
 
-        // 规则数量
-        num = nlh->nlmsg_flags;
-        while (NLMSG_OK(nlh, ret))
-        {
-            if (nlh->nlmsg_type == NLMSG_DONE)
-            {
-                tinywall_rule_user *rule = (tinywall_rule_user *)NLMSG_DATA(nlh);
+    //     // 规则数量
+    //     num = nlh->nlmsg_flags;
+    //     while (NLMSG_OK(nlh, ret))
+    //     {
+    //         if (nlh->nlmsg_type == NLMSG_DONE)
+    //         {
+    //             tinywall_rule_user *rule = (tinywall_rule_user *)NLMSG_DATA(nlh);
 
-                // 打开文件
-                FILE *fp = fopen("rule_table.txt", "a");
-                if (fp == NULL)
-                {
-                    perror("fopen");
-                    break;
-                }
+    //             // 打开文件
+    //             FILE *fp = fopen("rule_table.txt", "w");
+    //             if (fp == NULL)
+    //             {
+    //                 perror("fopen");
+    //                 break;
+    //             }
 
-                // 写入规则
-                fprintf(fp, "%s %d %s %d %d %d %d %d %d %d %d\n",
-                        inet_ntoa(*(struct in_addr *)&rule->src_ip),
-                        ntohs(rule->smask),
-                        inet_ntoa(*(struct in_addr *)&rule->dst_ip),
-                        ntohs(rule->dmask),
-                        ntohs(rule->src_port_min),
-                        ntohs(rule->src_port_max),
-                        ntohs(rule->dst_port_min),
-                        ntohs(rule->dst_port_max),
-                        ntohs(rule->protocol),
-                        ntohs(rule->action),
-                        ntohs(rule->logging));
-                count++;
-                fclose(fp);
-                printf("Rule added to rule_table.txt\n");
-            }
-            nlh = NLMSG_NEXT(nlh, ret);
-        }
-        printf("num: %d\n", num);
-        printf("count: %d\n", count);
-        if (count == num)
-            break;
-    }
+    //             // 写入规则
+    //             fprintf(fp, "%s %d %s %d %d %d %d %d %d %d %d\n",
+    //                     inet_ntoa(*(struct in_addr *)&rule->src_ip),
+    //                     ntohs(rule->smask),
+    //                     inet_ntoa(*(struct in_addr *)&rule->dst_ip),
+    //                     ntohs(rule->dmask),
+    //                     ntohs(rule->src_port_min),
+    //                     ntohs(rule->src_port_max),
+    //                     ntohs(rule->dst_port_min),
+    //                     ntohs(rule->dst_port_max),
+    //                     ntohs(rule->protocol),
+    //                     ntohs(rule->action),
+    //                     ntohs(rule->logging));
+    //             count++;
+    //             fclose(fp);
+    //             printf("Rule added to rule_table.txt\n");
+    //         }
+    //         nlh = NLMSG_NEXT(nlh, ret);
+    //     }
+    //     printf("num: %d\n", num);
+    //     printf("count: %d\n", count);
+    //     if (count == num)
+    //         break;
+    // }
 }
 
 void log_show(int sock_fd, struct nlmsghdr *nlh, struct sockaddr_nl *dest_addr)
@@ -280,6 +287,9 @@ int main()
     struct nlmsghdr *nlh = NULL;
     int sock_fd;
     int ret = 0;
+    tinywall_rule_user rule;
+    char src_ip_str[16], dst_ip_str[16];
+    unsigned short smask, dmask, src_port_min, src_port_max, dst_port_min, dst_port_max = 0;
     load_kernel_modules();
     memset(&src_addr, 0, sizeof(src_addr));
     src_addr.nl_family = AF_NETLINK;
@@ -323,12 +333,12 @@ int main()
     {
         printf("\nMenu:\n");
         printf("0. EXIT\n");
-        printf("1. Load Rule\n");
-        printf("2. Remove Rule\n");
-        printf("3. List Rules\n");
-        printf("4. Clear Rules\n");
-        printf("5. Store Rules\n");
-        printf("6. Show Conns\n");
+        printf("1. Add a Rule\n");
+        printf("2. Delete a Rule\n");
+        printf("3. Clear Rules\n");
+        printf("4. Load Rule from file\n");
+        printf("5. Store Rules to file\n");
+        printf("6. Show Connections\n");
         printf("7. Show Logs\n");
         printf("Choose an option: ");
 
@@ -341,6 +351,62 @@ int main()
         case 0:
             goto exit;
         case 1:
+            printf("Enter source IP:\n");
+            scanf("%15s", src_ip_str);
+            if (inet_pton(AF_INET, src_ip_str, &rule.src_ip) <= 0)
+            {
+                fprintf(stderr, "Invalid source IP address: %s\n", src_ip_str);
+                break;
+            }
+            printf("Enter source_mask in Integer(0-32):");
+            scanf("%hu", &smask);
+            printf("Enter min source port:");
+            scanf("%hu", &src_port_min);
+            printf("Enter max source port:");
+            scanf("%hu", &src_port_max);
+
+            printf("Enter destination IP:\n");
+            scanf("%15s", dst_ip_str);
+            if (inet_pton(AF_INET, dst_ip_str, &rule.dst_ip) <= 0)
+            {
+                fprintf(stderr, "Invalid destination IP address: %s\n", dst_ip_str);
+                break;
+            }
+            printf("Enter destination_mask in Integer(0-32):");
+            scanf("%hu", &dmask);
+            printf("Enter min destination port:");
+            scanf("%hu", &dst_port_min);
+            printf("Enter max destination port:");
+            scanf("%hu", &dst_port_max);
+            printf("Enter protocol(1-255):");
+            scanf("%hu", &rule.protocol);
+            printf("Enter action(0 for drop, 1 for accept):");
+            scanf("%hu", &rule.action);
+            printf("Enter logging(0 for no logging, 1 for logging):");
+            scanf("%hu", &rule.logging);
+
+            rule.smask = htons(smask);
+            rule.dmask = htons(dmask);
+            rule.src_port_min = htons(src_port_min);
+            rule.src_port_max = htons(src_port_max);
+            rule.dst_port_min = htons(dst_port_min);
+            rule.dst_port_max = htons(dst_port_max);
+            rule.protocol = htons(rule.protocol);
+            rule.action = htons(rule.action);
+            rule.logging = htons(rule.logging);
+            ret = rule_add(sock_fd, &dest_addr, &rule);
+            if (ret == -2)
+            {
+                printf("Error adding rule\n");
+            }
+            break;
+        case 2:
+            rule_remove(sock_fd, nlh, &dest_addr);
+            break;
+        case 3:
+            rules_clear(sock_fd, nlh, &dest_addr);
+            break;
+        case 4:
             printf("Enter rule filename:\n");
             char filename[256];
             scanf("%s", filename);
@@ -355,15 +421,6 @@ int main()
                 printf("Error: socket发送rule失败!");
                 goto exit;
             }
-            break;
-        case 2:
-            rule_remove(sock_fd, &dest_addr);
-            break;
-        case 3:
-            rules_list(sock_fd, nlh, &dest_addr);
-            break;
-        case 4:
-            rules_clear(sock_fd, nlh, &dest_addr);
             break;
         case 5:
             rules_store(sock_fd, nlh, &dest_addr);

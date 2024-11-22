@@ -92,7 +92,7 @@ typedef struct tinywall_log
         } udp;
     };
     __be16 len;
-    __be32 action;
+    __be16 action;
     struct list_head node;
 } tinywall_log;
 
@@ -198,7 +198,7 @@ static inline size_t tinywall_hash(struct tinywall_conn *conn)
         }
         hash = jhash_2words(ntohs(port1), ntohs(port2), hash);
         break;
-    case IPPROTO_ICMP:
+    default:
         break;
     }
     // 返回最终的哈希值
